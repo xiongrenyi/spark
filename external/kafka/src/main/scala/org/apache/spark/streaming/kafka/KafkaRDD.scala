@@ -17,6 +17,9 @@
 
 package org.apache.spark.streaming.kafka
 
+import org.apache.spark.streaming.api.kafka.KafkaRDDPartition
+import org.apache.spark.streaming.api.kafka.KafkaRDDPartition
+
 import scala.collection.mutable.ArrayBuffer
 import scala.reflect.{classTag, ClassTag}
 
@@ -56,9 +59,14 @@ class KafkaRDD[
     messageHandler: MessageAndMetadata[K, V] => R
   ) extends RDD[R](sc, Nil) with Logging with HasOffsetRanges {
   override def getPartitions: Array[Partition] = {
-    offsetRanges.zipWithIndex.map { case (o, i) =>
-        val (host, port) = leaders(TopicAndPartition(o.topic, o.partition))
-        new KafkaRDDPartition(i, o.topic, o.partition, o.fromOffset, o.untilOffset, host, port)
+    val steps = offsetRanges.groupBy(o => o.topic).map(g => (g._1, sparkContext.getConf.getLong("spark.streaming.kafka.maxRatePerTask." + g._1, Long.MaxValue)))
+    offsetRanges.flatMap { case o =>
+      (o.fromOffset until o.untilOffset by steps(o.topic)).map(s =>
+        (o.topic, o.partition, s, math.min(o.untilOffset,  s + steps(o.topic) - 1))
+      )
+    }.zipWithIndex.map { case (o, i) =>
+      val (host, port) = leaders(TopicAndPartition(o._1, o._2))
+      new KafkaRDDPartition(i, o._1, o._2, o._3, o._4, host, port)
     }.toArray
   }
 
